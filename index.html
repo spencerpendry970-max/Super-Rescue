@@ -1,0 +1,348 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+<title>Duck to the Rescue</title>
+<style>
+  :root{
+    --foam:#ffffff;
+    --water-top:#bdeaf2;
+    --water-bot:#6fc6da;
+    --duck:#ffd23f;
+    --beak:#ff9f1c;
+    --ink:#1d4a55;
+    --tile:#e8f7fb;
+  }
+  *{box-sizing:border-box;margin:0;padding:0;-webkit-tap-highlight-color:transparent;}
+  html,body{height:100%;}
+  body{
+    font-family:"Trebuchet MS","Segoe UI",system-ui,sans-serif;
+    background:
+      radial-gradient(circle at 20% 0%,#dff7fb 0%,transparent 55%),
+      linear-gradient(180deg,#cdeef4,#9bdbe8);
+    display:flex;align-items:center;justify-content:center;
+    min-height:100%;padding:16px;color:var(--ink);
+    overflow:hidden;
+  }
+  .frame{
+    width:min(92vw,640px);
+  }
+  .hud{
+    display:flex;align-items:center;justify-content:space-between;
+    margin-bottom:10px;font-weight:bold;
+  }
+  .title{
+    font-size:clamp(18px,5vw,26px);letter-spacing:.5px;
+    text-shadow:0 2px 0 rgba(255,255,255,.6);
+  }
+  .title .small{font-size:.55em;font-weight:600;opacity:.7;display:block;letter-spacing:2px;}
+  .count{
+    background:#fff;border-radius:999px;padding:8px 16px;
+    font-size:clamp(14px,4vw,18px);
+    box-shadow:0 4px 0 rgba(29,74,85,.15);
+    white-space:nowrap;
+  }
+  .stage{
+    position:relative;width:100%;aspect-ratio:4/3;
+    border-radius:22px;overflow:hidden;
+    box-shadow:0 18px 40px rgba(29,74,85,.35),inset 0 0 0 6px #fff;
+    background:var(--tile);
+  }
+  canvas{display:block;width:100%;height:100%;touch-action:none;}
+  .overlay{
+    position:absolute;inset:0;display:flex;flex-direction:column;
+    align-items:center;justify-content:center;text-align:center;
+    background:rgba(29,74,85,.55);backdrop-filter:blur(3px);
+    color:#fff;padding:24px;gap:14px;transition:opacity .25s;
+  }
+  .overlay h2{font-size:clamp(22px,7vw,38px);text-shadow:0 3px 0 rgba(0,0,0,.2);}
+  .overlay p{max-width:32ch;line-height:1.5;font-size:clamp(13px,3.6vw,16px);opacity:.95;}
+  .btn{
+    border:none;cursor:pointer;font-family:inherit;font-weight:bold;
+    background:var(--duck);color:var(--ink);
+    padding:14px 30px;border-radius:999px;font-size:clamp(15px,4.5vw,19px);
+    box-shadow:0 6px 0 #d9a200;transition:transform .08s,box-shadow .08s;
+  }
+  .btn:active{transform:translateY(4px);box-shadow:0 2px 0 #d9a200;}
+  .hint{margin-top:8px;font-size:clamp(11px,3.2vw,13px);text-align:center;opacity:.7;}
+  .hidden{opacity:0;pointer-events:none;}
+</style>
+</head>
+<body>
+<div class="frame">
+  <div class="hud">
+    <div class="title">Duck to the Rescue<span class="small">BUBBLE BATH PATROL</span></div>
+    <div class="count" id="count">Unicorns: 0 / 0</div>
+  </div>
+  <div class="stage">
+    <canvas id="game"></canvas>
+    <div class="overlay" id="overlay">
+      <h2>Duck to the Rescue</h2>
+      <p>Tiny unicorns are trapped in soap bubbles! Steer your rubber duck into each bubble to pop it and set them free.</p>
+      <button class="btn" id="startBtn">Start the rescue</button>
+    </div>
+  </div>
+  <div class="hint">Arrow keys / WASD to swim &nbsp;•&nbsp; or just drag with your finger</div>
+</div>
+
+<script>
+const canvas = document.getElementById('game');
+const ctx = canvas.getContext('2d');
+const overlay = document.getElementById('overlay');
+const startBtn = document.getElementById('startBtn');
+const countEl = document.getElementById('count');
+
+let W = 0, H = 0, DPR = 1;
+function resize(){
+  const rect = canvas.getBoundingClientRect();
+  DPR = Math.min(window.devicePixelRatio || 1, 2);
+  W = rect.width; H = rect.height;
+  canvas.width = W * DPR; canvas.height = H * DPR;
+  ctx.setTransform(DPR,0,0,DPR,0,0);
+}
+window.addEventListener('resize', resize);
+
+// ---- Game state ----
+const TOTAL = 6;
+let duck, bubbles, sparkles, foam, rescued, running, startTime, finishTime;
+const keys = {};
+let pointer = null; // {x,y} when dragging
+
+function reset(){
+  duck = { x: W*0.5, y: H*0.8, vx:0, vy:0, r: Math.min(W,H)*0.07, angle:0, bob:0 };
+  bubbles = [];
+  sparkles = [];
+  foam = [];
+  rescued = 0;
+  finishTime = 0;
+  // scatter bubbles, kept away from the duck's start
+  for(let i=0;i<TOTAL;i++){
+    let bx, by, ok, tries=0;
+    do{
+      bx = W*(0.12 + Math.random()*0.76);
+      by = H*(0.10 + Math.random()*0.55);
+      ok = Math.hypot(bx-duck.x, by-duck.y) > Math.min(W,H)*0.28;
+      tries++;
+    }while(!ok && tries<40);
+    bubbles.push({
+      x:bx, y:by,
+      r: Math.min(W,H)*0.075,
+      vx:(Math.random()-0.5)*0.4,
+      vy:(Math.random()-0.5)*0.4,
+      hue: (i*60)%360,
+      wob: Math.random()*Math.PI*2,
+      popped:false, free:false, freeY:0, freeAlpha:1
+    });
+  }
+  // background foam blobs
+  for(let i=0;i<14;i++){
+    foam.push({x:Math.random()*W, y:Math.random()*H, r:8+Math.random()*22, a:0.12+Math.random()*0.18, dx:(Math.random()-0.5)*0.15});
+  }
+  updateCount();
+}
+
+function updateCount(){ countEl.textContent = `Unicorns: ${rescued} / ${TOTAL}`; }
+
+// ---- Drawing helpers ----
+function drawDuck(d){
+  ctx.save();
+  ctx.translate(d.x, d.y + Math.sin(d.bob)*3);
+  const tilt = Math.max(-0.25, Math.min(0.25, d.vx*0.03));
+  ctx.rotate(tilt);
+  const r = d.r;
+  // ripple
+  ctx.fillStyle='rgba(255,255,255,0.35)';
+  ctx.beginPath(); ctx.ellipse(0, r*0.7, r*1.25, r*0.45, 0, 0, Math.PI*2); ctx.fill();
+  // body
+  ctx.fillStyle = getCss('--duck');
+  ctx.beginPath(); ctx.ellipse(0, 0, r*1.1, r*0.85, 0, 0, Math.PI*2); ctx.fill();
+  // tail
+  ctx.beginPath(); ctx.moveTo(-r*0.9,-r*0.1); ctx.quadraticCurveTo(-r*1.7,-r*0.6,-r*1.5,0); ctx.quadraticCurveTo(-r*1.4,r*0.2,-r*0.9,r*0.15); ctx.fill();
+  // head
+  ctx.beginPath(); ctx.arc(r*0.7, -r*0.7, r*0.62, 0, Math.PI*2); ctx.fill();
+  // beak
+  ctx.fillStyle = getCss('--beak');
+  ctx.beginPath(); ctx.moveTo(r*1.15,-r*0.7); ctx.quadraticCurveTo(r*1.95,-r*0.55,r*1.2,-r*0.42); ctx.fill();
+  // eye
+  ctx.fillStyle='#1d2b30';
+  ctx.beginPath(); ctx.arc(r*0.85,-r*0.85, r*0.1, 0, Math.PI*2); ctx.fill();
+  ctx.fillStyle='#fff';
+  ctx.beginPath(); ctx.arc(r*0.88,-r*0.88, r*0.035, 0, Math.PI*2); ctx.fill();
+  // cheek
+  ctx.fillStyle='rgba(255,140,120,0.5)';
+  ctx.beginPath(); ctx.arc(r*0.55,-r*0.5, r*0.12, 0, Math.PI*2); ctx.fill();
+  ctx.restore();
+}
+
+const maneColors = ['#ff6b9d','#ffb86b','#ffe66b','#7be08a','#6bc7ff','#b88bff'];
+function drawUnicorn(x,y,s,alpha){
+  ctx.save();
+  ctx.globalAlpha = alpha;
+  ctx.translate(x,y);
+  // body
+  ctx.fillStyle='#fff';
+  ctx.beginPath(); ctx.ellipse(0,0,s*0.95,s*0.8,0,0,Math.PI*2); ctx.fill();
+  // mane
+  for(let i=0;i<6;i++){
+    ctx.fillStyle=maneColors[i];
+    ctx.beginPath();
+    ctx.arc(-s*0.45 + Math.cos(i)*s*0.1, -s*0.4 + i*s*0.22, s*0.22, 0, Math.PI*2);
+    ctx.fill();
+  }
+  // horn
+  ctx.fillStyle='#ffd23f';
+  ctx.beginPath(); ctx.moveTo(s*0.25,-s*0.6); ctx.lineTo(s*0.45,-s*1.25); ctx.lineTo(s*0.55,-s*0.5); ctx.fill();
+  // eye
+  ctx.fillStyle='#1d2b30';
+  ctx.beginPath(); ctx.arc(s*0.4,-s*0.1,s*0.09,0,Math.PI*2); ctx.fill();
+  // cheek
+  ctx.fillStyle='rgba(255,140,160,0.6)';
+  ctx.beginPath(); ctx.arc(s*0.15,s*0.15,s*0.13,0,Math.PI*2); ctx.fill();
+  ctx.restore();
+}
+
+function drawBubble(b){
+  ctx.save();
+  ctx.translate(b.x,b.y);
+  const wob = 1 + Math.sin(b.wob)*0.04;
+  ctx.scale(wob, 1/wob);
+  // bubble fill
+  const g = ctx.createRadialGradient(-b.r*0.3,-b.r*0.3,b.r*0.1,0,0,b.r);
+  g.addColorStop(0,`hsla(${b.hue},90%,92%,0.55)`);
+  g.addColorStop(1,`hsla(${b.hue},80%,75%,0.18)`);
+  ctx.fillStyle=g;
+  ctx.beginPath(); ctx.arc(0,0,b.r,0,Math.PI*2); ctx.fill();
+  // rim
+  ctx.strokeStyle=`hsla(${b.hue},90%,98%,0.8)`;
+  ctx.lineWidth=2; ctx.stroke();
+  // shine
+  ctx.fillStyle='rgba(255,255,255,0.85)';
+  ctx.beginPath(); ctx.ellipse(-b.r*0.35,-b.r*0.4,b.r*0.18,b.r*0.1,-0.6,0,Math.PI*2); ctx.fill();
+  ctx.restore();
+  // trapped unicorn inside
+  drawUnicorn(b.x, b.y, b.r*0.5, 1);
+}
+
+function spawnSparkles(x,y,hue){
+  for(let i=0;i<16;i++){
+    const a = Math.random()*Math.PI*2, sp = 1+Math.random()*4;
+    sparkles.push({x,y,vx:Math.cos(a)*sp,vy:Math.sin(a)*sp,life:1,hue:hue+Math.random()*40-20,r:2+Math.random()*3});
+  }
+}
+
+function getCss(v){ return getComputedStyle(document.documentElement).getPropertyValue(v).trim(); }
+
+// ---- Loop ----
+function update(){
+  if(!running) return;
+  // duck control
+  const accel = 0.55, maxv = Math.min(W,H)*0.012*60/60 * 0.9;
+  const speedCap = Math.min(W,H)*0.012;
+  let ax=0, ay=0;
+  if(pointer){
+    const dx=pointer.x-duck.x, dy=pointer.y-duck.y;
+    const dist=Math.hypot(dx,dy)||1;
+    if(dist>2){ ax=dx/dist; ay=dy/dist; }
+  }else{
+    if(keys.left) ax-=1; if(keys.right) ax+=1;
+    if(keys.up) ay-=1; if(keys.down) ay+=1;
+    const m=Math.hypot(ax,ay); if(m){ax/=m;ay/=m;}
+  }
+  duck.vx += ax*accel; duck.vy += ay*accel;
+  duck.vx *= 0.88; duck.vy *= 0.88;
+  const sp=Math.hypot(duck.vx,duck.vy), cap=Math.min(W,H)*0.02;
+  if(sp>cap){ duck.vx=duck.vx/sp*cap; duck.vy=duck.vy/sp*cap; }
+  duck.x += duck.vx; duck.y += duck.vy;
+  duck.bob += 0.15;
+  // walls
+  const m=duck.r*0.8;
+  if(duck.x<m){duck.x=m;duck.vx*=-0.4;} if(duck.x>W-m){duck.x=W-m;duck.vx*=-0.4;}
+  if(duck.y<m){duck.y=m;duck.vy*=-0.4;} if(duck.y>H-m){duck.y=H-m;duck.vy*=-0.4;}
+
+  // bubbles drift + collision
+  bubbles.forEach(b=>{
+    if(b.popped){
+      if(b.free){ b.freeY-=1.3; b.freeAlpha-=0.012; }
+      return;
+    }
+    b.wob+=0.08;
+    b.x+=b.vx; b.y+=b.vy;
+    if(b.x<b.r||b.x>W-b.r) b.vx*=-1;
+    if(b.y<b.r||b.y>H-b.r) b.vy*=-1;
+    b.x=Math.max(b.r,Math.min(W-b.r,b.x));
+    b.y=Math.max(b.r,Math.min(H-b.r,b.y));
+    // pop?
+    if(Math.hypot(b.x-duck.x,b.y-duck.y) < b.r+duck.r*0.6){
+      b.popped=true; b.free=true; b.freeY=b.y; b.freeAlpha=1;
+      spawnSparkles(b.x,b.y,b.hue);
+      rescued++; updateCount();
+      if(rescued>=TOTAL){ finishTime=(performance.now()-startTime)/1000; win(); }
+    }
+  });
+
+  // sparkles
+  sparkles.forEach(s=>{ s.x+=s.vx; s.y+=s.vy; s.vy+=0.08; s.life-=0.025; });
+  sparkles = sparkles.filter(s=>s.life>0);
+
+  // foam drift
+  foam.forEach(f=>{ f.x+=f.dx; if(f.x<-30)f.x=W+30; if(f.x>W+30)f.x=-30; });
+}
+
+function draw(){
+  // water
+  const g=ctx.createLinearGradient(0,0,0,H);
+  g.addColorStop(0,getCss('--water-top')); g.addColorStop(1,getCss('--water-bot'));
+  ctx.fillStyle=g; ctx.fillRect(0,0,W,H);
+  // foam blobs
+  foam.forEach(f=>{ ctx.fillStyle=`rgba(255,255,255,${f.a})`; ctx.beginPath(); ctx.arc(f.x,f.y,f.r,0,Math.PI*2); ctx.fill(); });
+  // freed unicorns floating up
+  bubbles.forEach(b=>{ if(b.popped && b.free && b.freeAlpha>0) drawUnicorn(b.x, b.freeY, b.r*0.5, Math.max(0,b.freeAlpha)); });
+  // active bubbles
+  bubbles.forEach(b=>{ if(!b.popped) drawBubble(b); });
+  // sparkles
+  sparkles.forEach(s=>{ ctx.globalAlpha=s.life; ctx.fillStyle=`hsl(${s.hue},90%,70%)`; ctx.beginPath(); ctx.arc(s.x,s.y,s.r,0,Math.PI*2); ctx.fill(); ctx.globalAlpha=1; });
+  // duck
+  drawDuck(duck);
+}
+
+function frame(){ update(); draw(); requestAnimationFrame(frame); }
+
+// ---- Flow ----
+function start(){
+  resize(); reset();
+  running=true; startTime=performance.now();
+  overlay.classList.add('hidden');
+}
+function win(){
+  running=false;
+  overlay.innerHTML = `
+    <h2>All unicorns free! 🦄</h2>
+    <p>Your rubber duck popped every bubble in <b>${finishTime.toFixed(1)}s</b>. Splashing good work.</p>
+    <button class="btn" id="againBtn">Rescue again</button>`;
+  overlay.classList.remove('hidden');
+  document.getElementById('againBtn').addEventListener('click', start);
+}
+
+startBtn.addEventListener('click', start);
+
+// keyboard
+const map={ArrowLeft:'left',a:'left',A:'left',ArrowRight:'right',d:'right',D:'right',ArrowUp:'up',w:'up',W:'up',ArrowDown:'down',s:'down',S:'down'};
+addEventListener('keydown',e=>{ if(map[e.key]){keys[map[e.key]]=true; pointer=null; e.preventDefault();}});
+addEventListener('keyup',e=>{ if(map[e.key])keys[map[e.key]]=false; });
+
+// pointer / touch drag
+function setPointer(e){
+  const r=canvas.getBoundingClientRect();
+  const t=e.touches?e.touches[0]:e;
+  pointer={x:t.clientX-r.left, y:t.clientY-r.top};
+}
+canvas.addEventListener('pointerdown',e=>{setPointer(e);});
+canvas.addEventListener('pointermove',e=>{ if(e.pressure>0||e.buttons>0||e.pointerType==='touch') setPointer(e);});
+canvas.addEventListener('pointerup',()=>{pointer=null;});
+canvas.addEventListener('pointercancel',()=>{pointer=null;});
+
+resize(); reset(); frame();
+</script>
+</body>
+</html>
